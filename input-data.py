@@ -13,27 +13,26 @@ INPUT_DATA = 'D:/python/deep-learning/MRI-2D/BMP-cnn/BMP-data/ATR_L'
 OUTPUT_FILE = 'D:/python/deep-learning/MRI-2D/data_npy/data_ATR_L.npy'
 
 
-# def create_image_list(sess, test_percentage, validation_percentage):
 def create_image_list(sess):
-    sub_dirs = [x[0] for x in os.walk(INPUT_DATA)][1:]
+    sub_dirs = [x[0] for x in os.walk(INPUT_DATA)][1:]  # sub_dirs是所有子文件名
 
     training_images = []
     training_labels = []
     testing_images = []
     testing_labels = []
     current_label = 0
-    chance = 0
+    chance = 0  # 用来分测试集和训练集
 
     for sub_dir in sub_dirs:
 
         extensions = ['bmp']
         file_list = []
-        dir_name = os.path.basename(sub_dir)
+        dir_name = os.path.basename(sub_dir)  # os.path.basename(),返回path最后的文件名
         for extension in extensions:
             file_glob = os.path.join(INPUT_DATA, dir_name, '*.' + extension)
             file_list.extend(glob.glob(file_glob))
         if not file_list: continue
-        print(len(file_list))
+        print(len(file_list))  # 把一个子文件里的所有图片加入到file_list里面。
 
         for file_name in file_list:
             image_raw_data = gfile.FastGFile(file_name, 'rb').read()
@@ -43,7 +42,7 @@ def create_image_list(sess):
             # raw_data=[46,810]=37260
             # 问题出在inception-V3 只认299*299*3的彩色图片
             image_value = sess.run(image)
-            chance = chance + 1
+            chance = chance + 1  # chance是处理图片的数量
 
             if chance < 273:
                 training_images.append(image_value)
@@ -76,7 +75,6 @@ def create_image_list(sess):
 
 def main():
     with tf.Session() as sess:
-        # processed_data = create_image_list(sess, TEST_PERCENTAGE, VALIDATION_PERCENTAGE)
         processed_data = create_image_list(sess)
         np.save(OUTPUT_FILE, processed_data)
 
