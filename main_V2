@@ -1,0 +1,305 @@
+import numpy as np
+import tensorflow as tf
+import tensorflow.contrib.slim as slim
+import tensorflow.contrib.slim.python.slim.nets.inception_v3 as inception_v3
+import matplotlib.pyplot as plt
+from numpy import trapz
+
+name = 'ICVF'
+# 谷歌训练好的模型
+CKPT_FILE = 'inception_v3.ckpt'
+
+LEARNING_RATE = 0.00005
+STEPS = 5  # 480
+ROC_step = 4
+BATCH = 8
+N_CLASSES = 2
+num_experiments = 5  # Number of repeated experiments
+num_thresholds = 100  # Number of thresholds
+
+step_list = list(range(STEPS))
+train_accuracy_list = []
+test_accuracy_list = []
+train_loss_list = []
+test_loss_list = []
+AUC_list = []
+Total_FPR_list = []
+Total_TPR_list = []
+all_TP = np.zeros((num_experiments, num_thresholds), dtype=int)
+all_TN = np.zeros((num_experiments, num_thresholds), dtype=int)
+all_FP = np.zeros((num_experiments, num_thresholds), dtype=int)
+all_FN = np.zeros((num_experiments, num_thresholds), dtype=int)
+
+# 参数前缀
+# 不需要加载的参数，这是最后的全连接层，在新的问题中需要重新训练这一层参数
+CHECKPOINT_EXCLUDE_SCOPES = 'InceptionV3/Logits,InceptionV3/AuxLogits'
+# 需要训练的网络层参数名称
+TRAINABLE_SCOPES = 'InceptionV3/Logits,InceptionV3/AuxLogits'
+
+
+# 获取所有需要从谷歌模型中的参数
+def get_tuned_variables():
+    exclusions = [scope.strip() for scope in CHECKPOINT_EXCLUDE_SCOPES.split(',')]
+    variables_to_restore = []
+
+    # 枚举所有参数，判断是否需要
+    for var in slim.get_model_variables():
+        excluded = False
+        for exclusion in exclusions:
+            if var.op.name.startswith(exclusion):
+                excluded = True
+                break
+        if not excluded:
+            variables_to_restore.append(var)
+
+    return variables_to_restore
+
+
+# 获取需要训练的变量
+def get_trainable_variables():
+    scopes = [scope.strip() for scope in TRAINABLE_SCOPES.split(',')]
+    variable_to_train = []
+    for scope in scopes:
+        variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope)
+        variable_to_train.extend(variables)
+
+    return variable_to_train
+
+
+def save_result():
+    train_acc = []
+    train_loss = []
+    test_acc = []
+    test_loss = []
+    total_train_accuracy = []
+    total_test_accuracy = []
+    total_train_loss = []
+    total_test_loss = []
+
+    sum_TP = np.zeros(num_thresholds, dtype=int)
+    sum_TN = np.zeros(num_thresholds, dtype=int)
+    sum_FP = np.zeros(num_thresholds, dtype=int)
+    sum_FN = np.zeros(num_thresholds, dtype=int)
+
+    fig_average = plt.figure()  # 建立可视化图像框
+
+    ax1 = fig_average.add_subplot(2, 3, 1)  # z子图总行数、列数，位置
+    ax2 = fig_average.add_subplot(2, 3, 2)
+    ax3 = fig_average.add_subplot(2, 3, 4)
+    ax4 = fig_average.add_subplot(2, 3, 5)
+    ax5 = fig_average.add_subplot(2, 3, 3)
+
+    ax1.set_title('average_train_accuracy', fontsize=10, y=1.02)
+    ax2.set_title('average_test_accuracy', fontsize=10, y=1.02)
+    ax3.set_title('average_train_loss', fontsize=10, y=1.02)
+    ax4.set_title('average_test_loss', fontsize=10, y=1.02)
+    ax5.set_title('average_ROC', fontsize=10, y=1.02)
+
+    for i in range(num_experiments):
+        train_acc.append(train_accuracy_list[STEPS*i:STEPS*(i+1)])
+        train_loss.append(train_loss_list[STEPS * i:STEPS * (i + 1)])
+        test_acc.append(test_accuracy_list[STEPS * i:STEPS * (i + 1)])
+        test_loss.append(test_loss_list[STEPS * i:STEPS * (i + 1)])
+
+    for j in range(STEPS):
+        t_value1 = 0
+        t_value2 = 0
+        t_value3 = 0
+        t_value4 = 0
+        for i in range(num_experiments):
+            t_value1 = t_value1 + train_acc[i][j]
+            t_value2 = t_value2 + train_loss[i][j]
+            t_value3 = t_value3 + test_acc[i][j]
+            t_value4 = t_value4 + test_loss[i][j]
+        total_train_accuracy.append(t_value1)
+        total_train_loss.append(t_value2)
+        total_test_accuracy.append(t_value3)
+        total_test_loss.append(t_value4)
+
+    average_train_accuracy = np.array(total_train_accuracy) / num_experiments  # 把列表转化为numpy做除法
+    average_train_loss = np.array(total_train_loss) / num_experiments
+    average_test_accuracy = np.array(total_test_accuracy) / num_experiments
+    average_test_loss = np.array(total_test_loss) / num_experiments
+
+    total_AUC = sum(AUC_list)
+    average_AUC = total_AUC / num_experiments
+    print("average_AUC:" + str(average_AUC))
+
+    for j in range(num_thresholds):
+        sum_TP[j] = sum(all_TP[m][j] for m in range(num_experiments))
+        sum_FP[j] = sum(all_FP[m][j] for m in range(num_experiments))
+        sum_TN[j] = sum(all_TN[m][j] for m in range(num_experiments))
+        sum_FN[j] = sum(all_FN[m][j] for m in range(num_experiments))
+
+    ave_FPR = sum_FP / (sum_FP + sum_TN)
+    ave_TPR = sum_TP / (sum_TP + sum_FN)
+    fig_average.tight_layout()
+
+    ax1.plot(step_list, average_train_accuracy)
+    ax2.plot(step_list, average_test_accuracy)
+    ax3.plot(step_list, average_train_loss)
+    ax4.plot(step_list, average_test_loss)
+    ax5.plot(ave_FPR, ave_TPR) # ROC曲线的横轴为假正例率(FPR), 纵轴为真正例率(TPR)
+    a2_AUC = -trapz(ave_TPR, ave_FPR)
+    print("average_AUC:" + str(a2_AUC))
+
+    plt.plot([0, 1], [0, 1], linestyle='--', lw=1, color='r', label='ROC=0.5', alpha=.8)
+
+    save_file_1 = 'D:/python/deep-learning/JME/result/' + name + '.eps'
+    save_file_2 = 'D:/python/deep-learning/JME/result/' + name + '.jpg'
+    plt.savefig(save_file_1, dpi=600, format='eps')  # 保存为矢量图，
+    plt.savefig(save_file_2, dpi=600, format='jpg')  # 保存为jpg
+
+    average_acc = average_test_accuracy[-1]
+    # w 是清空型写入， a 是不清空连续写入
+    with open('D:/python/deep-learning/JME/result/result.txt', 'a', encoding='utf-8') as f:
+        f.write("\n-------------------------------------分割线-----------------------------------------\n")
+        f.write(name + "  average_AUC: " + str(average_AUC))
+        f.write("\n")
+        f.write(name + "  average_acc: " + str(average_acc))
+    # plt.show()
+
+
+def main(self):
+    for m in range(num_experiments):  # 0 1 2 3 4 5 6 7 8 9 重复试验10次
+        INPUT_DATA = 'D:/python/deep-learning/JME/ICVF_npy/' + name + '_' + str(m + 1) + '.npy'
+        tf.reset_default_graph()
+
+        processed_data = np.load(INPUT_DATA)
+        training_images = processed_data[0]
+        training_labels = processed_data[1]
+        testing_images = processed_data[2]
+        testing_labels = processed_data[3]
+        n_training_example = len(training_images)
+        print("the %d time" % (m+1))
+        print(len(training_images))
+        print(len(training_labels))
+        print(len(testing_images))
+        print(len(testing_labels))
+
+        images = tf.placeholder(tf.float32, [None, 299, 299, 3], name='input_images')
+        labels = tf.placeholder(tf.int64, [None], name='labels')
+
+        with slim.arg_scope(inception_v3.inception_v3_arg_scope()):
+            logits, _ = inception_v3.inception_v3(images, num_classes=N_CLASSES)
+
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
+        loss = tf.reduce_mean(cross_entropy, name='loss')  # 求所有样本的平均loss
+
+        train_step = tf.train.AdamOptimizer(LEARNING_RATE).minimize(loss)
+
+        with tf.name_scope('evaluation'):
+            correct_prediction = tf.equal(tf.argmax(logits, 1), labels)  # 1表示的是按行比较返回最大值的索引
+            A = loss
+            B = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+            evaluation_step = [A, B]
+        # 定义加载模型的参数
+        load_fn = slim.assign_from_checkpoint_fn(CKPT_FILE, get_tuned_variables(), ignore_missing_vars=True)
+
+        with tf.Session() as sess:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+
+            print('Loading tuned variables from %s' % CKPT_FILE)
+            load_fn(sess)
+
+            start = 0
+            end = BATCH
+            for i in range(STEPS):
+
+                train_accuracy = sess.run(evaluation_step, feed_dict={
+                    images: training_images[start: end],
+                    labels: training_labels[start: end]
+                })
+                train_loss = train_accuracy[0]
+                train_acc = train_accuracy[1]
+
+                sess.run(train_step, feed_dict={
+                    images: training_images[start: end],
+                    labels: training_labels[start: end]
+                })
+
+                test_accuracy = sess.run(evaluation_step, feed_dict={
+                    images: testing_images,
+                    labels: testing_labels
+                })
+                test_loss = test_accuracy[0]
+                test_acc = test_accuracy[1]
+
+                train_accuracy_list.append(train_acc * 100.0)
+                train_loss_list.append(train_loss)
+                test_accuracy_list.append(test_acc * 100.0)
+                test_loss_list.append(test_loss)
+
+                if i % 10 == 0:
+                    print('Step %d: train loss = %.3f' % (i, train_loss))
+                    print('Step %d: train accruacy = %.1f%%' % (i, train_acc * 100.0))
+                    print('Step %d: Test loss = %.3f' % (i, test_loss))
+                    print('Step %d: Test accruacy = %.1f%%' % (i, test_acc * 100.0))
+
+                if i == ROC_step:
+                    predict = sess.run(tf.nn.softmax(logits), feed_dict={
+                        images: testing_images,
+                        labels: testing_labels})
+                    AUC_pro = predict[:, 0]
+                    probability = predict[:, 0] * 100  # 有13个
+                    TP = 0
+                    TN = 0
+                    FP = 0
+                    FN = 0
+                    number = 0
+                    # roc_threshold = sorted(probability, reverse=True)  # 从大到小144个概率值 threshold是预测事件的真实概率
+                    for j in range(num_thresholds):  # 人为设置threshold为1-100中的每个整数
+                        for k in range(13):
+                            if probability[k] <= j:  # 预测为1
+                                if testing_labels[k] == 1:  # 真实为1
+                                    TP = TP + 1
+                                elif testing_labels[k] == 0:  # 真实为0
+                                    FP = FP + 1
+                            elif probability[k] > j:  # 预测为0
+                                if testing_labels[k] == 1:  # 真实为1
+                                    FN = FN + 1
+                                elif testing_labels[k] == 0:  # 真实为0
+                                    TN = TN + 1
+
+                        FPR = FP / (FP + TN)
+                        TPR = TP / (TP + FN)
+                        Total_FPR_list.append(FPR)
+                        Total_TPR_list.append(TPR)
+
+                        # 如果j用真实概率就不是整数,所以不能用[m][j]，但后来又改为了人为threshold
+                        all_TP[m][number] = TP
+                        all_TN[m][number] = TN
+                        all_FP[m][number] = FP
+                        all_FN[m][number] = FN
+                        TP = 0
+                        TN = 0
+                        FP = 0
+                        FN = 0
+                        number = number + 1
+
+                    prediction_tensor = tf.convert_to_tensor(AUC_pro)
+                    label_tensor = tf.convert_to_tensor(testing_labels)
+                    auc_value, auc_op = tf.metrics.auc(label_tensor, prediction_tensor, num_thresholds=100)
+                    sess.run(tf.global_variables_initializer())
+                    sess.run(tf.local_variables_initializer())
+                    sess.run(auc_op)
+                    value = 1 - sess.run(auc_value)
+                    AUC_list.append(value)
+                    print("AUC:" + str(value))
+
+                start = end
+                if start == n_training_example:
+                    start = 0
+                end = start + BATCH
+                if end > n_training_example:
+                    end = n_training_example
+
+    save_result()
+
+
+# 主函数的入口，import到其他脚本中，tf.app.run()不会运行
+if __name__ == '__main__':
+    tf.app.run()
+# 如果入口函数不叫main()，而是一个其他名字的函数，如test()，则写tf.app.run(test())
+# 如果入口函数叫main()，则可以把入口写成tf.app.run()
